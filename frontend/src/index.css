@@ -586,6 +586,11 @@ body {
   font-size: 10px; color: var(--text-muted);
   cursor: pointer; user-select: none;
 }
+.mixer-simulate-checkbox {
+  width: 14px; height: 14px;
+  accent-color: var(--accent-blue);
+  flex-shrink: 0;
+}
 .mixer-mix-btn {
   display: flex; align-items: center; gap: 6px;
   padding: 8px 20px;

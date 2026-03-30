@@ -147,6 +147,7 @@ export function ComponentsMixer({ onMix, onCancel, progress, loadedSlots }: Comp
         <label className="mixer-simulate-label">
           <input
             type="checkbox"
+            className="mixer-simulate-checkbox"
             checked={simulateSlow}
             onChange={e => setSimulateSlow(e.target.checked)}
             disabled={isMixing}
