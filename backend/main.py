@@ -8,7 +8,7 @@ No business logic here (Constitution §V).
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.routers import images
+from backend.routers import images, mixer
 
 
 def create_app() -> FastAPI:
@@ -30,6 +30,7 @@ def create_app() -> FastAPI:
 
     # Register routers
     app.include_router(images.router, prefix="/api/v1")
+    app.include_router(mixer.router, prefix="/api/v1")
 
     return app
 
