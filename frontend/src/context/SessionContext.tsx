@@ -6,6 +6,10 @@ interface SessionContextType {
   loading: boolean;
   error: string | null;
   createSession: () => Promise<void>;
+  emphasizerImage: any | null;
+  setEmphasizerImage: (img: any | null) => void;
+  emphasizerPixels: number[] | null;
+  setEmphasizerPixels: (arr: number[] | null) => void;
 }
 
 export const SessionContext = createContext<SessionContextType | undefined>(undefined);
@@ -14,6 +18,8 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [emphasizerImage, setEmphasizerImage] = useState<any | null>(null);
+  const [emphasizerPixels, setEmphasizerPixels] = useState<number[] | null>(null);
 
   const createSession = useCallback(async () => {
     setLoading(true);
@@ -34,7 +40,11 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [createSession]);
 
   return (
-    <SessionContext.Provider value={{ sessionId, loading, error, createSession }}>
+    <SessionContext.Provider value={{ 
+      sessionId, loading, error, createSession,
+      emphasizerImage, setEmphasizerImage,
+      emphasizerPixels, setEmphasizerPixels
+    }}>
       {children}
     </SessionContext.Provider>
   );

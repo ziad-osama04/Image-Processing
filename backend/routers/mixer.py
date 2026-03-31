@@ -140,6 +140,14 @@ async def mix_images(session_id: str, request: MixRequest) -> MixResponse:
     )
     mask = region_mask.to_array(height, width)
 
+    # ── Normalize all images to the reference size before mixing ─────────
+    target_size = (height, width)
+    for img in images:
+        if img is not None and img.is_loaded:
+            arr = img.get_active_array()
+            if arr.shape[:2] != target_size:
+                img.apply_resize(target_size, preserve_aspect=False)
+
     # Simulate slow processing if requested (non-blocking)
     if request.simulate_slow:
         await asyncio.sleep(10)

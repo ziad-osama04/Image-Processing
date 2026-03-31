@@ -1,9 +1,3 @@
-/**
- * TypeScript interfaces for the image processing application.
- */
-
-// ── API Response Types ──────────────────────────────────────────────
-
 export interface SessionResponse {
   session_id: string;
 }
@@ -13,13 +7,13 @@ export interface ImageSlotResponse {
   filename: string;
   width: number;
   height: number;
-  preview: string; // base64 PNG
+  preview: string;
 }
 
 export interface FTComponentResponse {
   slot: number;
   component: string;
-  image: string; // base64 PNG
+  image: string;
 }
 
 export interface ResizePolicyRequest {
@@ -41,7 +35,7 @@ export interface ResizePolicyResponse {
 
 export interface ReconstructResponse {
   slot: number;
-  image: string; // base64 PNG
+  image: string;
 }
 
 export interface VerifyRoundTripResponse {
@@ -51,8 +45,6 @@ export interface VerifyRoundTripResponse {
 }
 
 export type FTComponent = 'magnitude' | 'phase' | 'real' | 'imaginary';
-
-// ── Mixer Types ─────────────────────────────────────────────────────
 
 export interface ViewportPairProps {
   sessionId: string;
@@ -85,19 +77,17 @@ export interface ViewportState {
 export type MixMode = 'mag-phase' | 'real-imag';
 
 export interface ImageWeight {
-  componentA: number; // magnitude or real
-  componentB: number; // phase or imaginary
+  componentA: number;
+  componentB: number;
 }
 
 export interface MixerState {
   mode: MixMode;
   weights: ImageWeight[];
-  regionSize: number;        // 0–100%
+  regionSize: number;
   regionType: 'inner' | 'outer';
   simulateSlow: boolean;
 }
-
-// ── Mixing API Types ────────────────────────────────────────────────
 
 export interface MixRequest {
   mode: MixMode;
@@ -110,13 +100,12 @@ export interface MixRequest {
 
 export interface MixResponse {
   output_slot: number;
-  preview: string; // base64 PNG
+  preview: string;
   width: number;
   height: number;
 }
 
-// ── Emphasizer Types ────────────────────────────────────────────────
-
+// NOTE: Removed 'multiple-ft' as a mutually exclusive action!
 export type EmphasizerAction =
   | 'shift'
   | 'complex-exponential'
@@ -126,38 +115,26 @@ export type EmphasizerAction =
   | 'rotate'
   | 'differentiate'
   | 'integrate'
-  | 'window'
-  | 'multiple-ft';
+  | 'window';
 
 export type WindowType = 'rectangular' | 'gaussian' | 'hamming' | 'hanning';
 
 export interface EmphasizerParams {
-  // Shift
   shiftX: number;
   shiftY: number;
-  // Complex exponential
   expU: number;
   expV: number;
-  // Stretch
   stretchFactor: number;
-  // Mirror
   mirrorAxis: 'horizontal' | 'vertical' | 'both';
-  // Even/Odd
   evenOddType: 'even' | 'odd';
-  // Rotate
   rotateAngle: number;
-  // Differentiate
   diffDirection: 'x' | 'y' | 'both';
-  // Integrate
   intDirection: 'x' | 'y' | 'both';
-  // Window
   windowType: WindowType;
   windowWidthRatio: number;
   windowHeightRatio: number;
   windowSigma: number;
-  // Multiple FT
-  ftCount: number;
-  // Domain
+  ftCount: number; // This applies to ANY selected action!
   applyInFrequency: boolean;
 }
 

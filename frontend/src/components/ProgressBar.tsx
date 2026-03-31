@@ -27,8 +27,8 @@ export function ProgressBar({ progress, visible }: ProgressBarProps) {
     >
       <div className="progress-bar-track">
         <div
-          className="progress-bar-fill"
-          style={{ width: `${percent}%` }}
+          className={`progress-bar-fill ${visible && percent > 0 && percent < 100 ? 'pulse' : ''}`}
+          style={{ width: `${percent}%`, transition: 'width 0.3s ease-out' }}
         />
       </div>
       <span className="progress-bar-text">{percent}%</span>

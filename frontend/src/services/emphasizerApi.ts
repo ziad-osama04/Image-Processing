@@ -1,15 +1,4 @@
-/**
- * API client for the Emphasizer backend endpoints.
- *
- * Provides typed functions for:
- *  - Submitting transform operations
- *  - Streaming progress via SSE (EventSource)
- *  - Fetching completed transform results
- */
-
 const BASE_URL = '/api/v1';
-
-// ── Types ───────────────────────────────────────────────────────────
 
 export interface TransformRequest {
   operation: string;
@@ -24,18 +13,20 @@ export interface TransformResponse {
 
 export interface TransformResultResponse {
   request_id: number;
-  preview: string;       // base64 PNG spatial
-  ft_preview: string;    // base64 PNG FT
+  preview: string;       
+  ft_preview: string;    
   width: number;
   height: number;
 }
 
-export interface ProgressEvent {
-  request_id: number;
-  progress: number;      // 0.0–1.0
+export interface TransformComponentResponse {
+  image: string; // Base64 PNG
 }
 
-// ── Helper ──────────────────────────────────────────────────────────
+export interface ProgressEvent {
+  request_id: number;
+  progress: number;
+}
 
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -45,16 +36,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
   return response.json();
 }
 
-// ── API Functions ───────────────────────────────────────────────────
-
-/**
- * Submit a transform operation for background execution.
- */
-export async function applyTransform(
-  sessionId: string,
-  request: TransformRequest,
-  signal?: AbortSignal,
-): Promise<TransformResponse> {
+export async function applyTransform(sessionId: string, request: TransformRequest, signal?: AbortSignal): Promise<TransformResponse> {
   const res = await fetch(`${BASE_URL}/session/${sessionId}/transform`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -64,11 +46,6 @@ export async function applyTransform(
   return handleResponse<TransformResponse>(res);
 }
 
-/**
- * Connect to the SSE progress endpoint.
- *
- * Returns a cleanup function to close the connection.
- */
 export function connectProgress(
   sessionId: string,
   onProgress: (event: ProgressEvent) => void,
@@ -82,46 +59,31 @@ export function connectProgress(
     try {
       const data: ProgressEvent = JSON.parse(event.data);
       onProgress(data);
-
       if (data.progress >= 1.0) {
         eventSource.close();
         onComplete();
       }
-    } catch {
-      // Ignore parse errors
-    }
+    } catch { /* Ignore */ }
   };
 
   eventSource.onerror = (event) => {
     eventSource.close();
     onError?.(event);
   };
-
   return () => eventSource.close();
 }
 
-/**
- * Fetch the result of a completed transform.
- */
-export async function getTransformResult(
-  sessionId: string,
-  requestId: number,
-  signal?: AbortSignal,
-): Promise<TransformResultResponse> {
-  const res = await fetch(
-    `${BASE_URL}/session/${sessionId}/transform-result/${requestId}`,
-    { signal },
-  );
+export async function getTransformResult(sessionId: string, requestId: number, signal?: AbortSignal): Promise<TransformResultResponse> {
+  const res = await fetch(`${BASE_URL}/session/${sessionId}/transform-result/${requestId}`, { signal });
   return handleResponse<TransformResultResponse>(res);
 }
 
-/**
- * Toggle bottleneck simulation on the backend.
- */
-export async function toggleBottleneck(
-  sessionId: string,
-  enabled: boolean,
-): Promise<void> {
+export async function getTransformComponent(sessionId: string, requestId: number, domain: 'spatial' | 'frequency', component: string, signal?: AbortSignal): Promise<TransformComponentResponse> {
+  const res = await fetch(`${BASE_URL}/session/${sessionId}/transform-result/${requestId}/${domain}/${component}`, { signal });
+  return handleResponse<TransformComponentResponse>(res);
+}
+
+export async function toggleBottleneck(sessionId: string, enabled: boolean): Promise<void> {
   await fetch(`${BASE_URL}/session/${sessionId}/bottleneck`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

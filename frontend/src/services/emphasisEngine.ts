@@ -1,25 +1,5 @@
-/**
- * emphasisEngine.ts — Client-side FT Properties Emphasizer engine.
- *
- * Implements all 10 operations for Part B:
- *  1. Shift image
- *  2. Multiply by complex exponential
- *  3. Stretch image
- *  4. Mirror image
- *  5. Make even/odd
- *  6. Rotate image
- *  7. Differentiate image
- *  8. Integrate image
- *  9. Multiply by 2D window
- *  10. Multiple FT applications
- *
- * All operations work on ComplexImage to support complex-valued results.
- */
-
 import type { Complex } from './fftEngine';
 import { fft2dComplex, ifft2dComplex, complexAbs } from './fftEngine';
-
-// ── Complex Image type ──────────────────────────────────────────────
 
 export interface ComplexImage {
   real: Float64Array;
@@ -54,7 +34,6 @@ export function complexImageToPixels(img: ComplexImage, component: 'magnitude' |
       break;
   }
 
-  // Normalize to 0–255
   let min = Infinity, max = -Infinity;
   for (let i = 0; i < n; i++) {
     if (raw[i] < min) min = raw[i];
@@ -72,8 +51,6 @@ function cloneComplex(img: ComplexImage): ComplexImage {
     height: img.height,
   };
 }
-
-// ── 1. Shift Image ──────────────────────────────────────────────────
 
 export function shiftImage(img: ComplexImage, dx: number, dy: number): ComplexImage {
   const { width: w, height: h } = img;
@@ -94,8 +71,6 @@ export function shiftImage(img: ComplexImage, dx: number, dy: number): ComplexIm
   return out;
 }
 
-// ── 2. Multiply by Complex Exponential ──────────────────────────────
-
 export function multiplyByExp(img: ComplexImage, u0: number, v0: number): ComplexImage {
   const { width: w, height: h } = img;
   const out = cloneComplex(img);
@@ -106,15 +81,12 @@ export function multiplyByExp(img: ComplexImage, u0: number, v0: number): Comple
       const phase = 2 * Math.PI * (u0 * c / w + v0 * r / h);
       const expRe = Math.cos(phase);
       const expIm = Math.sin(phase);
-      // (a + bi)(c + di) = (ac - bd) + (ad + bc)i
       out.real[idx] = img.real[idx] * expRe - img.imag[idx] * expIm;
       out.imag[idx] = img.real[idx] * expIm + img.imag[idx] * expRe;
     }
   }
   return out;
 }
-
-// ── 3. Stretch Image ────────────────────────────────────────────────
 
 export function stretchImage(img: ComplexImage, factor: number): ComplexImage {
   const { width: w, height: h } = img;
@@ -138,41 +110,32 @@ export function stretchImage(img: ComplexImage, factor: number): ComplexImage {
   return out;
 }
 
-// ── 4. Mirror Image ─────────────────────────────────────────────────
-
 export function mirrorImage(img: ComplexImage, axis: 'horizontal' | 'vertical' | 'both'): ComplexImage {
   const { width: w, height: h } = img;
-  // Output is doubled in the mirror direction
-  let nw = w, nh = h;
-  if (axis === 'horizontal' || axis === 'both') nw = w * 2;
-  if (axis === 'vertical' || axis === 'both') nh = h * 2;
-
-  const out: ComplexImage = {
-    real: new Float64Array(nw * nh),
-    imag: new Float64Array(nw * nh),
-    width: nw,
-    height: nh,
-  };
-
-  for (let r = 0; r < nh; r++) {
-    for (let c = 0; c < nw; c++) {
-      let sr = r, sc = c;
-      if (axis === 'vertical' || axis === 'both') {
-        sr = r < h ? r : (nh - 1 - r);
+  const out = cloneComplex(img);
+  
+  if (axis === 'horizontal' || axis === 'both') {
+    const mid = Math.floor(w / 2);
+    for (let r = 0; r < h; r++) {
+      for (let c = mid; c < w; c++) {
+        const srcC = w - 1 - c;
+        out.real[r * w + c] = out.real[r * w + srcC];
+        out.imag[r * w + c] = out.imag[r * w + srcC];
       }
-      if (axis === 'horizontal' || axis === 'both') {
-        sc = c < w ? c : (nw - 1 - c);
+    }
+  }
+  if (axis === 'vertical' || axis === 'both') {
+    const mid = Math.floor(h / 2);
+    for (let r = mid; r < h; r++) {
+      for (let c = 0; c < w; c++) {
+        const srcR = h - 1 - r;
+        out.real[r * w + c] = out.real[srcR * w + c];
+        out.imag[r * w + c] = out.imag[srcR * w + c];
       }
-      sr = Math.min(sr, h - 1);
-      sc = Math.min(sc, w - 1);
-      out.real[r * nw + c] = img.real[sr * w + sc];
-      out.imag[r * nw + c] = img.imag[sr * w + sc];
     }
   }
   return out;
 }
-
-// ── 5. Make Even / Odd ──────────────────────────────────────────────
 
 export function makeEvenOdd(img: ComplexImage, type: 'even' | 'odd'): ComplexImage {
   const { width: w, height: h } = img;
@@ -189,7 +152,6 @@ export function makeEvenOdd(img: ComplexImage, type: 'even' | 'odd'): ComplexIma
 
   for (let r = 0; r < nh; r++) {
     for (let c = 0; c < nw; c++) {
-      // Map to original coordinates relative to center
       const cr = r < h ? r : (nh - r);
       const cc = c < w ? c : (nw - c);
       const isFlipped = (r >= h || c >= w);
@@ -205,48 +167,33 @@ export function makeEvenOdd(img: ComplexImage, type: 'even' | 'odd'): ComplexIma
   return out;
 }
 
-// ── 6. Rotate Image ─────────────────────────────────────────────────
-
 export function rotateImage(img: ComplexImage, angleDeg: number): ComplexImage {
   const { width: w, height: h } = img;
   const rad = (angleDeg * Math.PI) / 180;
   const cosA = Math.cos(rad);
   const sinA = Math.sin(rad);
 
-  // Compute new bounding box to fit rotated image
-  const corners = [
-    [-w / 2, -h / 2], [w / 2, -h / 2],
-    [-w / 2, h / 2], [w / 2, h / 2],
-  ];
+  const corners = [[-w/2, -h/2], [w/2, -h/2], [-w/2, h/2], [w/2, h/2]];
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const [x, y] of corners) {
     const rx = x * cosA - y * sinA;
     const ry = x * sinA + y * cosA;
-    minX = Math.min(minX, rx);
-    maxX = Math.max(maxX, rx);
-    minY = Math.min(minY, ry);
-    maxY = Math.max(maxY, ry);
+    minX = Math.min(minX, rx); maxX = Math.max(maxX, rx);
+    minY = Math.min(minY, ry); maxY = Math.max(maxY, ry);
   }
 
   const nw = Math.ceil(maxX - minX);
   const nh = Math.ceil(maxY - minY);
-  const out: ComplexImage = {
-    real: new Float64Array(nw * nh),
-    imag: new Float64Array(nw * nh),
-    width: nw,
-    height: nh,
-  };
+  const out: ComplexImage = { real: new Float64Array(nw*nh), imag: new Float64Array(nw*nh), width: nw, height: nh };
 
   const cx = w / 2, cy = h / 2;
   const ncx = nw / 2, ncy = nh / 2;
 
   for (let r = 0; r < nh; r++) {
     for (let c = 0; c < nw; c++) {
-      // Inverse rotation to find source pixel
       const dx = c - ncx, dy = r - ncy;
       const sx = dx * cosA + dy * sinA + cx;
       const sy = -dx * sinA + dy * cosA + cy;
-
       const si = Math.round(sy), sj = Math.round(sx);
       if (si >= 0 && si < h && sj >= 0 && sj < w) {
         out.real[r * nw + c] = img.real[si * w + sj];
@@ -257,16 +204,9 @@ export function rotateImage(img: ComplexImage, angleDeg: number): ComplexImage {
   return out;
 }
 
-// ── 7. Differentiate ────────────────────────────────────────────────
-
 export function differentiateImage(img: ComplexImage, direction: 'x' | 'y' | 'both'): ComplexImage {
   const { width: w, height: h } = img;
-  const out: ComplexImage = {
-    real: new Float64Array(w * h),
-    imag: new Float64Array(w * h),
-    width: w,
-    height: h,
-  };
+  const out: ComplexImage = { real: new Float64Array(w*h), imag: new Float64Array(w*h), width: w, height: h };
 
   for (let r = 0; r < h; r++) {
     for (let c = 0; c < w; c++) {
@@ -287,22 +227,17 @@ export function differentiateImage(img: ComplexImage, direction: 'x' | 'y' | 'bo
       }
 
       if (direction === 'both') {
-        // Gradient magnitude
         out.real[idx] = Math.sqrt(dxRe * dxRe + dyRe * dyRe);
         out.imag[idx] = Math.sqrt(dxIm * dxIm + dyIm * dyIm);
       } else if (direction === 'x') {
-        out.real[idx] = dxRe;
-        out.imag[idx] = dxIm;
+        out.real[idx] = dxRe; out.imag[idx] = dxIm;
       } else {
-        out.real[idx] = dyRe;
-        out.imag[idx] = dyIm;
+        out.real[idx] = dyRe; out.imag[idx] = dyIm;
       }
     }
   }
   return out;
 }
-
-// ── 8. Integrate ────────────────────────────────────────────────────
 
 export function integrateImage(img: ComplexImage, direction: 'x' | 'y' | 'both'): ComplexImage {
   const { width: w, height: h } = img;
@@ -327,45 +262,43 @@ export function integrateImage(img: ComplexImage, direction: 'x' | 'y' | 'both')
   return out;
 }
 
-// ── 9. 2D Window Multiplication ─────────────────────────────────────
-
 export type WindowType = 'rectangular' | 'gaussian' | 'hamming' | 'hanning';
 
 export interface WindowParams {
   type: WindowType;
-  widthRatio: number;  // 0–1, fraction of image width
-  heightRatio: number; // 0–1, fraction of image height
-  sigma?: number;      // for gaussian
+  widthRatio: number;
+  heightRatio: number;
+  sigma?: number;
 }
 
-function generateWindow1D(n: number, type: WindowType, size: number, sigma: number): Float64Array {
+function generateWindow1D(n: number, type: WindowType, sizeRatio: number, sigma: number): Float64Array {
   const win = new Float64Array(n);
-  const center = n / 2;
-  const halfSize = (n * size) / 2;
+  const winLen = Math.max(1, Math.floor(n * sizeRatio));
+  const padLeft = Math.floor((n - winLen) / 2);
+  const padRight = n - winLen - padLeft;
+  
+  const center = winLen / 2;
+  const halfSize = winLen / 2;
 
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < winLen; i++) {
     const dist = Math.abs(i - center);
+    let val = 0;
 
     switch (type) {
       case 'rectangular':
-        win[i] = dist <= halfSize ? 1 : 0;
+        val = 1;
         break;
       case 'gaussian':
-        win[i] = Math.exp(-(dist * dist) / (2 * sigma * sigma * halfSize * halfSize));
+        val = Math.exp(-(dist * dist) / (2 * sigma * sigma * halfSize * halfSize));
         break;
       case 'hamming':
-        if (dist <= halfSize) {
-          const t = (i - (center - halfSize)) / (2 * halfSize);
-          win[i] = 0.54 - 0.46 * Math.cos(2 * Math.PI * t);
-        }
+        val = 0.54 - 0.46 * Math.cos(2 * Math.PI * (i / Math.max(1, winLen - 1)));
         break;
       case 'hanning':
-        if (dist <= halfSize) {
-          const t = (i - (center - halfSize)) / (2 * halfSize);
-          win[i] = 0.5 * (1 - Math.cos(2 * Math.PI * t));
-        }
+        val = 0.5 * (1 - Math.cos(2 * Math.PI * (i / Math.max(1, winLen - 1))));
         break;
     }
+    win[padLeft + i] = val;
   }
   return win;
 }
@@ -379,16 +312,13 @@ export function applyWindow(img: ComplexImage, params: WindowParams): ComplexIma
   const out = cloneComplex(img);
   for (let r = 0; r < h; r++) {
     for (let c = 0; c < w; c++) {
-      const idx = r * w + c;
       const weight = winX[c] * winY[r];
-      out.real[idx] *= weight;
-      out.imag[idx] *= weight;
+      out.real[r * w + c] *= weight;
+      out.imag[r * w + c] *= weight;
     }
   }
   return out;
 }
-
-// ── 10. Multiple FT Applications ────────────────────────────────────
 
 export function applyMultipleFT(img: ComplexImage, count: number): ComplexImage {
   let current = img;
@@ -399,7 +329,6 @@ export function applyMultipleFT(img: ComplexImage, count: number): ComplexImage 
     }
     const fftResult = fft2dComplex(complexArr, current.width, current.height);
 
-    // Convert back to ComplexImage
     current = {
       real: new Float64Array(fftResult.rows * fftResult.cols),
       imag: new Float64Array(fftResult.rows * fftResult.cols),
@@ -413,8 +342,6 @@ export function applyMultipleFT(img: ComplexImage, count: number): ComplexImage 
   }
   return current;
 }
-
-// ── Compute FT of ComplexImage ──────────────────────────────────────
 
 export function computeFT(img: ComplexImage): ComplexImage {
   const complexArr: Complex[] = new Array(img.width * img.height);
@@ -454,16 +381,12 @@ export function computeIFT(img: ComplexImage): ComplexImage {
   return out;
 }
 
-// ── Convert ComplexImage to display pixels ───────────────────────────
-
 export function complexToDisplayPixels(
   img: ComplexImage,
   component: 'magnitude' | 'phase' | 'real' | 'imaginary'
 ): number[] {
   return complexImageToPixels(img, component);
 }
-
-// ── FT Shift for ComplexImage ───────────────────────────────────────
 
 export function shiftComplexImage(img: ComplexImage): ComplexImage {
   const { width: w, height: h } = img;
@@ -484,8 +407,6 @@ export function shiftComplexImage(img: ComplexImage): ComplexImage {
   }
   return out;
 }
-
-// ── Helper: Load image file to ComplexImage ─────────────────────────
 
 export function loadFileAsComplexImage(file: File): Promise<{ img: ComplexImage; pixels: number[] }> {
   return new Promise((resolve, reject) => {
@@ -516,7 +437,6 @@ export function loadFileAsComplexImage(file: File): Promise<{ img: ComplexImage;
   });
 }
 
-/** Render ComplexImage magnitude to base64 PNG. */
 export function complexImageToPngBase64(img: ComplexImage, component: 'magnitude' | 'phase' | 'real' | 'imaginary'): string {
   const pixels = complexToDisplayPixels(img, component);
   const canvas = document.createElement('canvas');
@@ -535,11 +455,9 @@ export function complexImageToPngBase64(img: ComplexImage, component: 'magnitude
   return canvas.toDataURL('image/png');
 }
 
-/** Render ComplexImage as log-magnitude for FT display. */
 export function complexImageToFTPngBase64(img: ComplexImage, component: 'magnitude' | 'phase' | 'real' | 'imaginary'): string {
   const shifted = shiftComplexImage(img);
   return complexImageToPngBase64(shifted, component);
 }
 
-/** Compute magnitude of complex value without overflow. */
 export { complexAbs };

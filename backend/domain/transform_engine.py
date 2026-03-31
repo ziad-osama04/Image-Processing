@@ -25,19 +25,6 @@ class TransformEngine:
 
     @staticmethod
     def shift(array: np.ndarray, dx: int, dy: int) -> np.ndarray:
-        """
-        Circular shift by (dx, dy) pixels.
-
-        Uses np.roll for efficient circular shifting.
-
-        Args:
-            array: 2D input array.
-            dx: Horizontal shift (positive = right).
-            dy: Vertical shift (positive = down).
-
-        Returns:
-            Shifted array of same shape.
-        """
         return np.roll(array, (dy, dx), axis=(0, 1))
 
     # ── 2. Complex Exponential ───────────────────────────────────────
@@ -46,17 +33,6 @@ class TransformEngine:
     def complex_exponential(
         array: np.ndarray, fx: float, fy: float
     ) -> np.ndarray:
-        """
-        Multiply by complex exponential exp(2jπ(fx·x + fy·y)).
-
-        Args:
-            array: 2D input array.
-            fx: Horizontal frequency (cycles/pixel).
-            fy: Vertical frequency (cycles/pixel).
-
-        Returns:
-            Complex-valued array of same shape.
-        """
         h, w = array.shape[:2]
         y_coords, x_coords = np.mgrid[0:h, 0:w]
         phase = 2.0 * np.pi * (fx * x_coords / w + fy * y_coords / h)
@@ -67,16 +43,6 @@ class TransformEngine:
 
     @staticmethod
     def stretch(array: np.ndarray, factor: float) -> np.ndarray:
-        """
-        Scale array by the given factor using scipy.ndimage.zoom.
-
-        Args:
-            array: 2D input array.
-            factor: Scale factor (>0). 2.0 = double size.
-
-        Returns:
-            Scaled array with new dimensions.
-        """
         if factor <= 0:
             raise ValueError(f"Stretch factor must be > 0, got {factor}")
         return ndimage.zoom(array, factor, order=3)
@@ -86,41 +52,35 @@ class TransformEngine:
     @staticmethod
     def mirror(array: np.ndarray, axis: str) -> np.ndarray:
         """
-        Flip the array along the specified axis.
+        Create symmetry by duplicating half the array onto the other half
+        (kaleidoscope-style), as required by the spec.
 
-        Args:
-            array: 2D input array.
-            axis: 'horizontal' (flip cols), 'vertical' (flip rows),
-                  or 'both'.
-
-        Returns:
-            Flipped array of same shape.
+        Idempotent: once the image is symmetric, applying again leaves it
+        unchanged — f(f(x)) == f(x).
         """
-        if axis == "horizontal":
-            return np.flip(array, axis=1)
-        elif axis == "vertical":
-            return np.flip(array, axis=0)
-        elif axis == "both":
-            return np.flip(array, axis=(0, 1))
-        else:
-            raise ValueError(
-                f"Invalid axis '{axis}'. Must be 'horizontal', 'vertical', or 'both'."
-            )
+        if axis not in ("horizontal", "vertical", "both"):
+            raise ValueError(f"Invalid axis '{axis}'")
+
+        h, w = array.shape[:2]
+        out = array.copy()
+
+        if axis in ("horizontal", "both"):
+            mid = w // 2
+            # Mirror the left half onto the right half
+            out[:, mid:] = np.flip(out[:, : w - mid], axis=1)
+
+        if axis in ("vertical", "both"):
+            mid = h // 2
+            # Mirror the top half onto the bottom half
+            # (reads from `out` so horizontal mirror is respected for "both")
+            out[mid:, :] = np.flip(out[: h - mid, :], axis=0)
+
+        return out
 
     # ── 5. Even/Odd ──────────────────────────────────────────────────
 
     @staticmethod
     def even_odd(array: np.ndarray, mode: str) -> np.ndarray:
-        """
-        Decompose into even or odd part: (f(x) ± f(-x)) / 2.
-
-        Args:
-            array: 2D input array.
-            mode: 'even' or 'odd'.
-
-        Returns:
-            Even or odd component of the signal.
-        """
         flipped = np.flip(array, axis=(0, 1))
         if mode == "even":
             return (array + flipped) / 2.0
@@ -133,53 +93,32 @@ class TransformEngine:
 
     @staticmethod
     def rotate(array: np.ndarray, angle_deg: float) -> np.ndarray:
-        """
-        Rotate by angle_deg degrees with canvas expansion.
-
-        Uses scipy.ndimage.rotate with reshape=True to enlarge
-        the canvas to fit the full rotated image (FR-009).
-
-        Args:
-            array: 2D input array.
-            angle_deg: Rotation angle in degrees.
-
-        Returns:
-            Rotated array with enlarged canvas.
-        """
         return ndimage.rotate(array, angle_deg, reshape=True, order=3)
 
     # ── 7. Differentiate ─────────────────────────────────────────────
 
     @staticmethod
-    def differentiate(array: np.ndarray) -> np.ndarray:
-        """
-        Compute spatial derivative (gradient magnitude).
-
-        Uses np.gradient for both axes and returns the magnitude.
-
-        Args:
-            array: 2D input array.
-
-        Returns:
-            Gradient magnitude array.
-        """
-        gy, gx = np.gradient(array.astype(np.float64))
-        return np.sqrt(gx**2 + gy**2)
+    def differentiate(array: np.ndarray, direction: str = "both") -> np.ndarray:
+        gy, gx = np.gradient(array.astype(np.complex128))
+        if direction == "x":
+            return gx
+        elif direction == "y":
+            return gy
+        else:
+            # Magnitude of complex gradient
+            return np.sqrt(np.abs(gx)**2 + np.abs(gy)**2)
 
     # ── 8. Integrate ─────────────────────────────────────────────────
 
     @staticmethod
-    def integrate(array: np.ndarray) -> np.ndarray:
-        """
-        Compute spatial integration (cumulative sum along axis 0).
-
-        Args:
-            array: 2D input array.
-
-        Returns:
-            Integrated array.
-        """
-        return np.cumsum(array.astype(np.float64), axis=0)
+    def integrate(array: np.ndarray, direction: str = "both") -> np.ndarray:
+        if direction == "x":
+            return np.cumsum(array.astype(np.complex128), axis=1)
+        elif direction == "y":
+            return np.cumsum(array.astype(np.complex128), axis=0)
+        else:
+            # 2D cumulative sum
+            return np.cumsum(np.cumsum(array.astype(np.complex128), axis=0), axis=1)
 
     # ── 9. 2D Windowing ──────────────────────────────────────────────
 
@@ -188,40 +127,38 @@ class TransformEngine:
         array: np.ndarray,
         window_type: str,
         sigma: float = 1.0,
+        width_ratio: float = 1.0,
+        height_ratio: float = 1.0,
     ) -> np.ndarray:
-        """
-        Apply a 2D window function.
-
-        Constructs a 2D window as the outer product of two 1D windows
-        matching the array shape, then multiplies element-wise.
-
-        Args:
-            array: 2D input array.
-            window_type: 'rectangular', 'gaussian', 'hamming', or 'hanning'.
-            sigma: Standard deviation for Gaussian window (in pixels).
-
-        Returns:
-            Windowed array.
-        """
+        """Apply a resizable 2D window function."""
         h, w = array.shape[:2]
 
+        win_w_len = max(1, int(w * width_ratio))
+        win_h_len = max(1, int(h * height_ratio))
+
         if window_type == "rectangular":
-            win_h = np.ones(h)
-            win_w = np.ones(w)
+            win_h_small = np.ones(win_h_len)
+            win_w_small = np.ones(win_w_len)
         elif window_type == "gaussian":
-            win_h = signal.windows.gaussian(h, std=sigma * h / 4)
-            win_w = signal.windows.gaussian(w, std=sigma * w / 4)
+            win_h_small = signal.windows.gaussian(win_h_len, std=sigma * win_h_len / 4)
+            win_w_small = signal.windows.gaussian(win_w_len, std=sigma * win_w_len / 4)
         elif window_type == "hamming":
-            win_h = signal.windows.hamming(h)
-            win_w = signal.windows.hamming(w)
+            win_h_small = signal.windows.hamming(win_h_len)
+            win_w_small = signal.windows.hamming(win_w_len)
         elif window_type == "hanning":
-            win_h = signal.windows.hann(h)
-            win_w = signal.windows.hann(w)
+            win_h_small = signal.windows.hann(win_h_len)
+            win_w_small = signal.windows.hann(win_w_len)
         else:
-            raise ValueError(
-                f"Unknown window_type '{window_type}'. "
-                "Must be 'rectangular', 'gaussian', 'hamming', or 'hanning'."
-            )
+            raise ValueError(f"Unknown window_type '{window_type}'.")
+
+        # Zero-pad the smaller window to the full array size (centered)
+        pad_left = (w - win_w_len) // 2
+        pad_right = w - win_w_len - pad_left
+        win_w = np.pad(win_w_small, (pad_left, pad_right), mode="constant")
+
+        pad_top = (h - win_h_len) // 2
+        pad_bottom = h - win_h_len - pad_top
+        win_h = np.pad(win_h_small, (pad_top, pad_bottom), mode="constant")
 
         window_2d = np.outer(win_h, win_w)
         return array * window_2d
@@ -230,18 +167,6 @@ class TransformEngine:
 
     @staticmethod
     def repeated_ft(array: np.ndarray, count: int) -> np.ndarray:
-        """
-        Apply FFT2 repeatedly N times.
-
-        Known property: applying FFT 4 times returns ~ original.
-
-        Args:
-            array: 2D input array.
-            count: Number of FFT applications (≥1).
-
-        Returns:
-            Result after N forward FFTs.
-        """
         if count < 1:
             return array.copy()
 
