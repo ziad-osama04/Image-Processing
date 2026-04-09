@@ -131,9 +131,12 @@ export interface EmphasizerParams {
   diffDirection: 'x' | 'y' | 'both';
   intDirection: 'x' | 'y' | 'both';
   windowType: WindowType;
-  windowWidthRatio: number;
-  windowHeightRatio: number;
+  windowKernelWidth: number;
+  windowKernelHeight: number;
+  windowStrideX: number;
+  windowStrideY: number;
   windowSigma: number;
+  windowMode: 'same' | 'valid';
   ftCount: number; // This applies to ANY selected action!
   applyInFrequency: boolean;
 }

@@ -90,9 +90,12 @@ const DEFAULT_PARAMS: EmphasizerParams = {
   diffDirection: 'both',
   intDirection: 'x',
   windowType: 'gaussian',
-  windowWidthRatio: 0.5,
-  windowHeightRatio: 0.5,
-  windowSigma: 0.5,
+  windowKernelWidth: 5,
+  windowKernelHeight: 5,
+  windowStrideX: 1,
+  windowStrideY: 1,
+  windowSigma: 1.0,
+  windowMode: 'same',
   ftCount: 0,
   applyInFrequency: false,
 };
@@ -244,9 +247,12 @@ export function EmphasizerWorkspace() {
           case 'window':
             modified = applyWindow(targetImage, {
               type: params.windowType,
-              widthRatio: params.windowWidthRatio,
-              heightRatio: params.windowHeightRatio,
+              kernelWidth: params.windowKernelWidth,
+              kernelHeight: params.windowKernelHeight,
+              strideX: params.windowStrideX,
+              strideY: params.windowStrideY,
               sigma: params.windowSigma,
+              mode: params.windowMode,
             });
             break;
           default: modified = targetImage;

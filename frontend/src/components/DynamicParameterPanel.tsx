@@ -96,10 +96,19 @@ export function DynamicParameterPanel({ action, params, onParamChange }: Dynamic
               <option value="hanning">Hanning</option>
             </select>
           </div>
-          <ParamSlider label="Width Ratio" value={params.windowWidthRatio} min={0.05} max={1} step={0.05} onChange={v => onParamChange('windowWidthRatio', v)} />
-          <ParamSlider label="Height Ratio" value={params.windowHeightRatio} min={0.05} max={1} step={0.05} onChange={v => onParamChange('windowHeightRatio', v)} />
+          <ParamSlider label="Kernel Width" value={params.windowKernelWidth} min={3} max={51} step={2} onChange={v => onParamChange('windowKernelWidth', Math.round(v) | 1)} />
+          <ParamSlider label="Kernel Height" value={params.windowKernelHeight} min={3} max={51} step={2} onChange={v => onParamChange('windowKernelHeight', Math.round(v) | 1)} />
+          <ParamSlider label="Stride X" value={params.windowStrideX} min={1} max={10} step={1} onChange={v => onParamChange('windowStrideX', v)} />
+          <ParamSlider label="Stride Y" value={params.windowStrideY} min={1} max={10} step={1} onChange={v => onParamChange('windowStrideY', v)} />
+          <div className="action-panel-section">
+            <label className="action-label">Conv Mode</label>
+            <select value={params.windowMode} onChange={e => onParamChange('windowMode', e.target.value as 'same' | 'valid')} className="action-select">
+              <option value="same">Same (preserve size)</option>
+              <option value="valid">Valid (no padding)</option>
+            </select>
+          </div>
           {params.windowType === 'gaussian' && (
-            <ParamSlider label="Sigma" value={params.windowSigma} min={0.1} max={2} step={0.05} onChange={v => onParamChange('windowSigma', v)} />
+            <ParamSlider label="Sigma" value={params.windowSigma} min={0.1} max={5} step={0.1} onChange={v => onParamChange('windowSigma', v)} />
           )}
         </>
       )}

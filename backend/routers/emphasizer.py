@@ -98,10 +98,13 @@ def execute_transform(cancel_event, set_progress, operation, params, domain, inp
         elif operation == "window":
             res = TransformEngine.window_2d(
                 target, 
-                params.get("windowType", "rectangular"), 
-                params.get("windowSigma", 0.5),
-                params.get("windowWidthRatio", 1.0),
-                params.get("windowHeightRatio", 1.0)
+                params.get("windowType", "rectangular"),
+                params.get("windowKernelWidth", 5),
+                params.get("windowKernelHeight", 5),
+                params.get("windowStrideX", 1),
+                params.get("windowStrideY", 1),
+                params.get("windowSigma", 1.0),
+                params.get("windowMode", "same"),
             )
         else:
             res = target

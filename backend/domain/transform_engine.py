@@ -126,42 +126,76 @@ class TransformEngine:
     def window_2d(
         array: np.ndarray,
         window_type: str,
+        kernel_width: int = 5,
+        kernel_height: int = 5,
+        stride_x: int = 1,
+        stride_y: int = 1,
         sigma: float = 1.0,
-        width_ratio: float = 1.0,
-        height_ratio: float = 1.0,
+        mode: str = "same",
     ) -> np.ndarray:
-        """Apply a resizable 2D window function."""
-        h, w = array.shape[:2]
+        """Apply a sliding-window convolution using the selected window kernel.
 
-        win_w_len = max(1, int(w * width_ratio))
-        win_h_len = max(1, int(h * height_ratio))
+        Builds a 2D separable kernel from the chosen window function,
+        normalizes it, then convolves it over the input array.
 
+        Parameters
+        ----------
+        array : 2D ndarray (float64 or complex128)
+        window_type : rectangular | gaussian | hamming | hanning
+        kernel_width, kernel_height : odd int, size of the convolution kernel
+        stride_x, stride_y : step size of the sliding window
+        sigma : std-dev ratio for gaussian window
+        mode : 'same' (output = input size) or 'valid' (no padding)
+        """
+        # Ensure odd kernel sizes
+        kw = max(1, kernel_width) | 1
+        kh = max(1, kernel_height) | 1
+
+        # ── Build 1D windows ───────────────────────────────────────────
         if window_type == "rectangular":
-            win_h_small = np.ones(win_h_len)
-            win_w_small = np.ones(win_w_len)
+            win_h = np.ones(kh)
+            win_w = np.ones(kw)
         elif window_type == "gaussian":
-            win_h_small = signal.windows.gaussian(win_h_len, std=sigma * win_h_len / 4)
-            win_w_small = signal.windows.gaussian(win_w_len, std=sigma * win_w_len / 4)
+            win_h = signal.windows.gaussian(kh, std=max(0.1, sigma * kh / 4))
+            win_w = signal.windows.gaussian(kw, std=max(0.1, sigma * kw / 4))
         elif window_type == "hamming":
-            win_h_small = signal.windows.hamming(win_h_len)
-            win_w_small = signal.windows.hamming(win_w_len)
+            win_h = signal.windows.hamming(kh)
+            win_w = signal.windows.hamming(kw)
         elif window_type == "hanning":
-            win_h_small = signal.windows.hann(win_h_len)
-            win_w_small = signal.windows.hann(win_w_len)
+            win_h = signal.windows.hann(kh)
+            win_w = signal.windows.hann(kw)
         else:
             raise ValueError(f"Unknown window_type '{window_type}'.")
 
-        # Zero-pad the smaller window to the full array size (centered)
-        pad_left = (w - win_w_len) // 2
-        pad_right = w - win_w_len - pad_left
-        win_w = np.pad(win_w_small, (pad_left, pad_right), mode="constant")
+        # ── 2D kernel (separable outer product), normalized ────────────
+        kernel = np.outer(win_h, win_w)
+        k_sum = kernel.sum()
+        if k_sum > 0:
+            kernel /= k_sum
 
-        pad_top = (h - win_h_len) // 2
-        pad_bottom = h - win_h_len - pad_top
-        win_h = np.pad(win_h_small, (pad_top, pad_bottom), mode="constant")
+        # ── Convolution ────────────────────────────────────────────────
+        conv_mode = "same" if mode == "same" else "valid"
 
-        window_2d = np.outer(win_h, win_w)
-        return array * window_2d
+        if np.iscomplexobj(array):
+            conv_real = signal.convolve2d(
+                array.real, kernel, mode=conv_mode, boundary="fill", fillvalue=0
+            )
+            conv_imag = signal.convolve2d(
+                array.imag, kernel, mode=conv_mode, boundary="fill", fillvalue=0
+            )
+            result = conv_real + 1j * conv_imag
+        else:
+            result = signal.convolve2d(
+                array, kernel, mode=conv_mode, boundary="fill", fillvalue=0
+            )
+
+        # ── Apply stride (subsample) ──────────────────────────────────
+        sx = max(1, int(stride_x))
+        sy = max(1, int(stride_y))
+        if sx > 1 or sy > 1:
+            result = result[::sy, ::sx]
+
+        return result
 
     # ── 10. Repeated FT ──────────────────────────────────────────────
 

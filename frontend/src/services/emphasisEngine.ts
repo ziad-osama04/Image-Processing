@@ -266,58 +266,120 @@ export type WindowType = 'rectangular' | 'gaussian' | 'hamming' | 'hanning';
 
 export interface WindowParams {
   type: WindowType;
-  widthRatio: number;
-  heightRatio: number;
+  kernelWidth: number;
+  kernelHeight: number;
+  strideX: number;
+  strideY: number;
   sigma?: number;
+  mode?: 'same' | 'valid';
 }
 
-function generateWindow1D(n: number, type: WindowType, sizeRatio: number, sigma: number): Float64Array {
+function generateWindow1D(n: number, type: WindowType, sigma: number): Float64Array {
   const win = new Float64Array(n);
-  const winLen = Math.max(1, Math.floor(n * sizeRatio));
-  const padLeft = Math.floor((n - winLen) / 2);
-  const padRight = n - winLen - padLeft;
-  
-  const center = winLen / 2;
-  const halfSize = winLen / 2;
-
-  for (let i = 0; i < winLen; i++) {
-    const dist = Math.abs(i - center);
-    let val = 0;
-
+  for (let i = 0; i < n; i++) {
     switch (type) {
       case 'rectangular':
-        val = 1;
+        win[i] = 1;
         break;
-      case 'gaussian':
-        val = Math.exp(-(dist * dist) / (2 * sigma * sigma * halfSize * halfSize));
+      case 'gaussian': {
+        const center = n / 2;
+        const std = Math.max(0.1, sigma * n / 4);
+        const dist = i - center;
+        win[i] = Math.exp(-(dist * dist) / (2 * std * std));
         break;
+      }
       case 'hamming':
-        val = 0.54 - 0.46 * Math.cos(2 * Math.PI * (i / Math.max(1, winLen - 1)));
+        win[i] = 0.54 - 0.46 * Math.cos(2 * Math.PI * (i / Math.max(1, n - 1)));
         break;
       case 'hanning':
-        val = 0.5 * (1 - Math.cos(2 * Math.PI * (i / Math.max(1, winLen - 1))));
+        win[i] = 0.5 * (1 - Math.cos(2 * Math.PI * (i / Math.max(1, n - 1))));
         break;
     }
-    win[padLeft + i] = val;
   }
   return win;
 }
 
-export function applyWindow(img: ComplexImage, params: WindowParams): ComplexImage {
-  const { width: w, height: h } = img;
-  const sigma = params.sigma ?? 0.5;
-  const winX = generateWindow1D(w, params.type, params.widthRatio, sigma);
-  const winY = generateWindow1D(h, params.type, params.heightRatio, sigma);
+function convolve2dChannel(
+  input: Float64Array, inW: number, inH: number,
+  kernel: Float64Array, kw: number, kh: number,
+  strideX: number, strideY: number, mode: 'same' | 'valid',
+): { data: Float64Array; outW: number; outH: number } {
+  let padX = 0, padY = 0;
+  if (mode === 'same') {
+    padX = Math.floor(kw / 2);
+    padY = Math.floor(kh / 2);
+  }
+  const paddedW = inW + 2 * padX;
+  const paddedH = inH + 2 * padY;
 
-  const out = cloneComplex(img);
-  for (let r = 0; r < h; r++) {
-    for (let c = 0; c < w; c++) {
-      const weight = winX[c] * winY[r];
-      out.real[r * w + c] *= weight;
-      out.imag[r * w + c] *= weight;
+  // Create zero-padded input
+  const padded = new Float64Array(paddedW * paddedH);
+  for (let r = 0; r < inH; r++) {
+    for (let c = 0; c < inW; c++) {
+      padded[(r + padY) * paddedW + (c + padX)] = input[r * inW + c];
     }
   }
-  return out;
+
+  // Output dimensions
+  const outH = Math.floor((paddedH - kh) / strideY) + 1;
+  const outW = Math.floor((paddedW - kw) / strideX) + 1;
+  const out = new Float64Array(outH * outW);
+
+  // Sliding-window convolution
+  for (let or_ = 0; or_ < outH; or_++) {
+    const inR = or_ * strideY;
+    for (let oc = 0; oc < outW; oc++) {
+      const inC = oc * strideX;
+      let sum = 0;
+      for (let kr = 0; kr < kh; kr++) {
+        for (let kc = 0; kc < kw; kc++) {
+          sum += padded[(inR + kr) * paddedW + (inC + kc)] * kernel[kr * kw + kc];
+        }
+      }
+      out[or_ * outW + oc] = sum;
+    }
+  }
+  return { data: out, outW, outH };
+}
+
+export function applyWindow(img: ComplexImage, params: WindowParams): ComplexImage {
+  const { width: w, height: h } = img;
+  const sigma = params.sigma ?? 1.0;
+  const mode = params.mode ?? 'same';
+  const sx = Math.max(1, params.strideX);
+  const sy = Math.max(1, params.strideY);
+
+  // Ensure odd kernel sizes
+  const kw = Math.max(1, params.kernelWidth) | 1;
+  const kh = Math.max(1, params.kernelHeight) | 1;
+
+  // Build 2D kernel (separable outer product)
+  const winX = generateWindow1D(kw, params.type, sigma);
+  const winY = generateWindow1D(kh, params.type, sigma);
+  const kernel = new Float64Array(kh * kw);
+  let kSum = 0;
+  for (let r = 0; r < kh; r++) {
+    for (let c = 0; c < kw; c++) {
+      const v = winY[r] * winX[c];
+      kernel[r * kw + c] = v;
+      kSum += v;
+    }
+  }
+  // Normalize kernel
+  if (kSum > 0) {
+    for (let i = 0; i < kernel.length; i++) kernel[i] /= kSum;
+  }
+
+  // Convolve real and imaginary parts separately
+  const realResult = convolve2dChannel(img.real, w, h, kernel, kw, kh, sx, sy, mode);
+  const imagResult = convolve2dChannel(img.imag, w, h, kernel, kw, kh, sx, sy, mode);
+
+  return {
+    real: realResult.data,
+    imag: imagResult.data,
+    width: realResult.outW,
+    height: realResult.outH,
+  };
 }
 
 export function applyMultipleFT(img: ComplexImage, count: number): ComplexImage {
