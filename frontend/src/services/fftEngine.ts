@@ -1,6 +1,10 @@
 /**
  * fftEngine.ts — Client-side 2D FFT engine for image processing.
  *
+ * OPTIMIZED: Uses flat Float64Array pairs (re[], im[]) instead of
+ * Complex object arrays to avoid GC pressure. In-place transforms
+ * eliminate row/column slice copies.
+ *
  * Provides:
  *  - Forward & Inverse 2D FFT (Cooley-Tukey radix-2)
  *  - Component extraction (magnitude, phase, real, imaginary)
@@ -15,13 +19,6 @@
 export interface Complex {
   re: number;
   im: number;
-}
-
-function complexMul(a: Complex, b: Complex): Complex {
-  return {
-    re: a.re * b.re - a.im * b.im,
-    im: a.re * b.im + a.im * b.re,
-  };
 }
 
 export function complexAbs(z: Complex): number {
@@ -44,11 +41,28 @@ export function nextPow2(n: number): number {
   return p;
 }
 
-// ── 1D FFT (iterative Cooley-Tukey) ─────────────────────────────────
+// ── 1D FFT (iterative Cooley-Tukey) on flat arrays ──────────────────
+// Operates on re[offset..offset+n-1] and im[offset..offset+n-1] with stride.
+// For row transforms: stride=1, for column transforms: stride=cols.
 
-function fft1d(data: Complex[], inverse = false): void {
-  const n = data.length;
+function fft1dFlat(
+  re: Float64Array, im: Float64Array,
+  offset: number, n: number, stride: number,
+  inverse: boolean
+): void {
   if (n <= 1) return;
+
+  // We need a temp buffer for bit-reversal + butterfly when stride != 1.
+  // For efficiency, extract to a contiguous buffer, transform, then write back.
+  const tmpRe = new Float64Array(n);
+  const tmpIm = new Float64Array(n);
+
+  // Copy strided data into contiguous temp
+  for (let i = 0; i < n; i++) {
+    const idx = offset + i * stride;
+    tmpRe[i] = re[idx];
+    tmpIm[i] = im[idx];
+  }
 
   // Bit-reversal permutation
   let j = 0;
@@ -60,39 +74,58 @@ function fft1d(data: Complex[], inverse = false): void {
     }
     j ^= bit;
     if (i < j) {
-      const tmp = data[i];
-      data[i] = data[j];
-      data[j] = tmp;
+      let t = tmpRe[i]; tmpRe[i] = tmpRe[j]; tmpRe[j] = t;
+      t = tmpIm[i]; tmpIm[i] = tmpIm[j]; tmpIm[j] = t;
     }
   }
 
   // Butterfly stages
+  const sign = inverse ? 1 : -1;
   for (let len = 2; len <= n; len <<= 1) {
     const halfLen = len >> 1;
-    const angle = ((inverse ? 1 : -1) * 2 * Math.PI) / len;
-    const wBase: Complex = { re: Math.cos(angle), im: Math.sin(angle) };
+    const angle = (sign * 2 * Math.PI) / len;
+    const wRe = Math.cos(angle);
+    const wIm = Math.sin(angle);
 
     for (let i = 0; i < n; i += len) {
-      let w: Complex = { re: 1, im: 0 };
+      let curWRe = 1, curWIm = 0;
       for (let k = 0; k < halfLen; k++) {
-        const even = data[i + k];
-        const odd = complexMul(w, data[i + k + halfLen]);
-        data[i + k] = { re: even.re + odd.re, im: even.im + odd.im };
-        data[i + k + halfLen] = { re: even.re - odd.re, im: even.im - odd.im };
-        w = complexMul(w, wBase);
+        const evenIdx = i + k;
+        const oddIdx = i + k + halfLen;
+
+        // complex multiply: w * odd
+        const tRe = curWRe * tmpRe[oddIdx] - curWIm * tmpIm[oddIdx];
+        const tIm = curWRe * tmpIm[oddIdx] + curWIm * tmpRe[oddIdx];
+
+        tmpRe[oddIdx] = tmpRe[evenIdx] - tRe;
+        tmpIm[oddIdx] = tmpIm[evenIdx] - tIm;
+        tmpRe[evenIdx] = tmpRe[evenIdx] + tRe;
+        tmpIm[evenIdx] = tmpIm[evenIdx] + tIm;
+
+        // advance twiddle
+        const newWRe = curWRe * wRe - curWIm * wIm;
+        curWIm = curWRe * wIm + curWIm * wRe;
+        curWRe = newWRe;
       }
     }
   }
 
   if (inverse) {
     for (let i = 0; i < n; i++) {
-      data[i].re /= n;
-      data[i].im /= n;
+      tmpRe[i] /= n;
+      tmpIm[i] /= n;
     }
+  }
+
+  // Write back
+  for (let i = 0; i < n; i++) {
+    const idx = offset + i * stride;
+    re[idx] = tmpRe[i];
+    im[idx] = tmpIm[i];
   }
 }
 
-// ── 2D FFT / IFFT ──────────────────────────────────────────────────
+// ── 2D FFT / IFFT on flat arrays ────────────────────────────────────
 
 export interface FFTResult {
   data: Complex[];
@@ -100,109 +133,129 @@ export interface FFTResult {
   cols: number;
 }
 
-/** Forward 2D FFT. Input: real grayscale pixels, zero-padded to pow2. */
-export function fft2d(pixels: number[], width: number, height: number): FFTResult {
+/** Flat-array 2D FFT result for internal use */
+export interface FlatFFTResult {
+  re: Float64Array;
+  im: Float64Array;
+  rows: number;
+  cols: number;
+}
+
+function fft2dFlat(
+  inRe: Float64Array, inIm: Float64Array,
+  width: number, height: number,
+  inverse: boolean
+): FlatFFTResult {
   const cols = nextPow2(width);
   const rows = nextPow2(height);
-  const data: Complex[] = new Array(rows * cols);
+  const n = rows * cols;
+  const re = new Float64Array(n);
+  const im = new Float64Array(n);
 
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      data[r * cols + c] =
-        r < height && c < width
-          ? { re: pixels[r * width + c], im: 0 }
-          : { re: 0, im: 0 };
+  // Copy input (with zero-padding)
+  for (let r = 0; r < height; r++) {
+    for (let c = 0; c < width; c++) {
+      re[r * cols + c] = inRe[r * width + c];
+      im[r * cols + c] = inIm[r * width + c];
     }
   }
 
-  // FFT rows
+  // Transform rows
   for (let r = 0; r < rows; r++) {
-    const row = data.slice(r * cols, (r + 1) * cols);
-    fft1d(row);
-    for (let c = 0; c < cols; c++) data[r * cols + c] = row[c];
+    fft1dFlat(re, im, r * cols, cols, 1, inverse);
   }
-  // FFT columns
+  // Transform columns
   for (let c = 0; c < cols; c++) {
-    const col: Complex[] = new Array(rows);
-    for (let r = 0; r < rows; r++) col[r] = data[r * cols + c];
-    fft1d(col);
-    for (let r = 0; r < rows; r++) data[r * cols + c] = col[r];
+    fft1dFlat(re, im, c, rows, cols, inverse);
   }
 
-  return { data, rows, cols };
+  return { re, im, rows, cols };
+}
+
+/** Forward 2D FFT. Input: real grayscale pixels, zero-padded to pow2. */
+export function fft2d(pixels: number[], width: number, height: number): FFTResult {
+  const inRe = new Float64Array(width * height);
+  const inIm = new Float64Array(width * height);
+  for (let i = 0; i < pixels.length; i++) inRe[i] = pixels[i];
+
+  const flat = fft2dFlat(inRe, inIm, width, height, false);
+  return flatToFFTResult(flat);
 }
 
 /** Forward 2D FFT on complex input. */
 export function fft2dComplex(input: Complex[], width: number, height: number): FFTResult {
-  const cols = nextPow2(width);
-  const rows = nextPow2(height);
-  const data: Complex[] = new Array(rows * cols);
-
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      data[r * cols + c] =
-        r < height && c < width
-          ? { re: input[r * width + c].re, im: input[r * width + c].im }
-          : { re: 0, im: 0 };
-    }
+  const inRe = new Float64Array(width * height);
+  const inIm = new Float64Array(width * height);
+  for (let i = 0; i < input.length; i++) {
+    inRe[i] = input[i].re;
+    inIm[i] = input[i].im;
   }
 
-  for (let r = 0; r < rows; r++) {
-    const row = data.slice(r * cols, (r + 1) * cols);
-    fft1d(row);
-    for (let c = 0; c < cols; c++) data[r * cols + c] = row[c];
-  }
-  for (let c = 0; c < cols; c++) {
-    const col: Complex[] = new Array(rows);
-    for (let r = 0; r < rows; r++) col[r] = data[r * cols + c];
-    fft1d(col);
-    for (let r = 0; r < rows; r++) data[r * cols + c] = col[r];
-  }
+  const flat = fft2dFlat(inRe, inIm, width, height, false);
+  return flatToFFTResult(flat);
+}
 
-  return { data, rows, cols };
+/** Forward 2D FFT on flat Float64Arrays (avoids Complex[] conversion). */
+export function fft2dFromFlat(
+  inRe: Float64Array, inIm: Float64Array,
+  width: number, height: number
+): FlatFFTResult {
+  return fft2dFlat(inRe, inIm, width, height, false);
+}
+
+/** Inverse 2D FFT on flat Float64Arrays. */
+export function ifft2dFromFlat(
+  inRe: Float64Array, inIm: Float64Array,
+  width: number, height: number
+): FlatFFTResult {
+  return fft2dFlat(inRe, inIm, width, height, true);
+}
+
+function flatToFFTResult(flat: FlatFFTResult): FFTResult {
+  const n = flat.rows * flat.cols;
+  const data: Complex[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    data[i] = { re: flat.re[i], im: flat.im[i] };
+  }
+  return { data, rows: flat.rows, cols: flat.cols };
 }
 
 /** Inverse 2D FFT → real pixel array (takes magnitude of result). */
 export function ifft2d(fftResult: FFTResult): { pixels: number[]; width: number; height: number } {
   const { rows, cols } = fftResult;
-  const data = fftResult.data.map((z) => ({ re: z.re, im: z.im })); // clone
-
-  // IFFT rows
-  for (let r = 0; r < rows; r++) {
-    const row = data.slice(r * cols, (r + 1) * cols);
-    fft1d(row, true);
-    for (let c = 0; c < cols; c++) data[r * cols + c] = row[c];
-  }
-  // IFFT columns
-  for (let c = 0; c < cols; c++) {
-    const col: Complex[] = new Array(rows);
-    for (let r = 0; r < rows; r++) col[r] = data[r * cols + c];
-    fft1d(col, true);
-    for (let r = 0; r < rows; r++) data[r * cols + c] = col[r];
+  const inRe = new Float64Array(rows * cols);
+  const inIm = new Float64Array(rows * cols);
+  for (let i = 0; i < fftResult.data.length; i++) {
+    inRe[i] = fftResult.data[i].re;
+    inIm[i] = fftResult.data[i].im;
   }
 
-  const pixels = data.map((z) => Math.max(0, Math.min(255, Math.round(complexAbs(z)))));
-  return { pixels, width: cols, height: rows };
+  const flat = fft2dFlat(inRe, inIm, cols, rows, true);
+  const pixels = new Array(flat.rows * flat.cols);
+  for (let i = 0; i < pixels.length; i++) {
+    pixels[i] = Math.max(0, Math.min(255, Math.round(
+      Math.sqrt(flat.re[i] * flat.re[i] + flat.im[i] * flat.im[i])
+    )));
+  }
+  return { pixels, width: flat.cols, height: flat.rows };
 }
 
 /** Inverse 2D FFT → complex output (preserves phase). */
 export function ifft2dComplex(fftResult: FFTResult): { data: Complex[]; width: number; height: number } {
   const { rows, cols } = fftResult;
-  const data = fftResult.data.map((z) => ({ re: z.re, im: z.im }));
-
-  for (let r = 0; r < rows; r++) {
-    const row = data.slice(r * cols, (r + 1) * cols);
-    fft1d(row, true);
-    for (let c = 0; c < cols; c++) data[r * cols + c] = row[c];
-  }
-  for (let c = 0; c < cols; c++) {
-    const col: Complex[] = new Array(rows);
-    for (let r = 0; r < rows; r++) col[r] = data[r * cols + c];
-    fft1d(col, true);
-    for (let r = 0; r < rows; r++) data[r * cols + c] = col[r];
+  const inRe = new Float64Array(rows * cols);
+  const inIm = new Float64Array(rows * cols);
+  for (let i = 0; i < fftResult.data.length; i++) {
+    inRe[i] = fftResult.data[i].re;
+    inIm[i] = fftResult.data[i].im;
   }
 
-  return { data, width: cols, height: rows };
+  const flat = fft2dFlat(inRe, inIm, cols, rows, true);
+  const data: Complex[] = new Array(flat.rows * flat.cols);
+  for (let i = 0; i < data.length; i++) {
+    data[i] = { re: flat.re[i], im: flat.im[i] };
+  }
+  return { data, width: flat.cols, height: flat.rows };
 }
 
 // ── FFT Shift ───────────────────────────────────────────────────────
@@ -219,6 +272,28 @@ export function fftShift(data: Complex[], rows: number, cols: number): Complex[]
     }
   }
   return shifted;
+}
+
+export function fftShiftFlat(
+  re: Float64Array, im: Float64Array,
+  rows: number, cols: number
+): { re: Float64Array; im: Float64Array } {
+  const n = rows * cols;
+  const outRe = new Float64Array(n);
+  const outIm = new Float64Array(n);
+  const hr = rows >> 1;
+  const hc = cols >> 1;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const sr = (r + hr) % rows;
+      const sc = (c + hc) % cols;
+      const srcIdx = r * cols + c;
+      const dstIdx = sr * cols + sc;
+      outRe[dstIdx] = re[srcIdx];
+      outIm[dstIdx] = im[srcIdx];
+    }
+  }
+  return { re: outRe, im: outIm };
 }
 
 export function ifftShift(data: Complex[], rows: number, cols: number): Complex[] {

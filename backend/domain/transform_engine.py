@@ -7,10 +7,12 @@ stretch, mirror, even/odd, rotation, differentiation, integration,
 
 All methods are static — no instance state (Constitution §II).
 Uses NumPy vectorized operations for performance.
+Optimized: separable convolution, scipy.fft for speed.
 """
 
 import numpy as np
 from scipy import ndimage, signal
+from scipy.fft import fft2 as scipy_fft2
 
 
 class TransformEngine:
@@ -135,8 +137,9 @@ class TransformEngine:
     ) -> np.ndarray:
         """Apply a sliding-window convolution using the selected window kernel.
 
-        Builds a 2D separable kernel from the chosen window function,
-        normalizes it, then convolves it over the input array.
+        Uses separable 1D convolution passes for O(n*(kw+kh)) instead of
+        O(n*kw*kh). Builds two 1D windows, normalizes so their product
+        sums to 1, then applies horizontal and vertical ndimage.convolve1d.
 
         Parameters
         ----------
@@ -167,27 +170,35 @@ class TransformEngine:
         else:
             raise ValueError(f"Unknown window_type '{window_type}'.")
 
-        # ── 2D kernel (separable outer product), normalized ────────────
-        kernel = np.outer(win_h, win_w)
-        k_sum = kernel.sum()
-        if k_sum > 0:
-            kernel /= k_sum
+        # ── Normalize so product sums to 1 ─────────────────────────────
+        total_sum = win_h.sum() * win_w.sum()
+        if total_sum > 0:
+            # Normalize one of them so the separable product sums to 1
+            win_h = win_h / win_h.sum()
+            win_w = win_w / win_w.sum()
 
-        # ── Convolution ────────────────────────────────────────────────
-        conv_mode = "same" if mode == "same" else "valid"
+        # ── Separable convolution (two 1D passes) ──────────────────────
+        ndimage_mode = "constant" if mode == "same" else "constant"
+        origin_h = 0
+        origin_w = 0
 
         if np.iscomplexobj(array):
-            conv_real = signal.convolve2d(
-                array.real, kernel, mode=conv_mode, boundary="fill", fillvalue=0
-            )
-            conv_imag = signal.convolve2d(
-                array.imag, kernel, mode=conv_mode, boundary="fill", fillvalue=0
-            )
-            result = conv_real + 1j * conv_imag
+            # Horizontal pass
+            tmp_real = ndimage.convolve1d(array.real, win_w, axis=1, mode=ndimage_mode, cval=0.0, origin=origin_w)
+            tmp_imag = ndimage.convolve1d(array.imag, win_w, axis=1, mode=ndimage_mode, cval=0.0, origin=origin_w)
+            # Vertical pass
+            result_real = ndimage.convolve1d(tmp_real, win_h, axis=0, mode=ndimage_mode, cval=0.0, origin=origin_h)
+            result_imag = ndimage.convolve1d(tmp_imag, win_h, axis=0, mode=ndimage_mode, cval=0.0, origin=origin_h)
+            result = result_real + 1j * result_imag
         else:
-            result = signal.convolve2d(
-                array, kernel, mode=conv_mode, boundary="fill", fillvalue=0
-            )
+            tmp = ndimage.convolve1d(array, win_w, axis=1, mode=ndimage_mode, cval=0.0, origin=origin_w)
+            result = ndimage.convolve1d(tmp, win_h, axis=0, mode=ndimage_mode, cval=0.0, origin=origin_h)
+
+        # Crop for 'valid' mode
+        if mode == "valid":
+            ph = kh // 2
+            pw = kw // 2
+            result = result[ph:result.shape[0]-ph, pw:result.shape[1]-pw]
 
         # ── Apply stride (subsample) ──────────────────────────────────
         sx = max(1, int(stride_x))
@@ -206,5 +217,5 @@ class TransformEngine:
 
         result = array.astype(np.complex128)
         for _ in range(count):
-            result = np.fft.fft2(result)
+            result = scipy_fft2(result, workers=-1)
         return result

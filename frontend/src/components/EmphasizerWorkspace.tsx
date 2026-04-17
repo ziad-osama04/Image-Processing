@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import type { EmphasizerAction, EmphasizerParams, FTComponent } from '../types/image';
 import { useSession } from '../hooks/useSession';
 import * as imageApi from '../services/imageApi';
@@ -100,6 +100,9 @@ const DEFAULT_PARAMS: EmphasizerParams = {
   applyInFrequency: false,
 };
 
+/** Debounce delay for parameter changes (ms) */
+const DEBOUNCE_MS = 200;
+
 export function EmphasizerWorkspace() {
   const { sessionId } = useSession();
   const [useBackend, setUseBackend] = useState<boolean>(true);
@@ -127,6 +130,12 @@ export function EmphasizerWorkspace() {
   const [compModFT, setCompModFT] = useState<FTComponent | 'magnitude'>('magnitude');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Cache original FT so we don't recompute on every param change ──
+  const cachedOrigFFT = useMemo(() => {
+    if (!originalImage) return null;
+    return computeFT(originalImage);
+  }, [originalImage]);
 
   const updateParam = useCallback(<K extends keyof EmphasizerParams>(key: K, value: EmphasizerParams[K]) => {
     setParams(prev => ({ ...prev, [key]: value }));
@@ -216,24 +225,28 @@ export function EmphasizerWorkspace() {
       .catch(console.error);
   }, [compModFT, useBackend, latestRequestId, sessionId]);
 
-  // Primary rendering effect (Local math & Original views)
+  // ── Render original viewports (only when image or original component changes) ──
   useEffect(() => {
-    if (!originalImage || !originalPixels) return;
+    if (!originalImage || !cachedOrigFFT) return;
+    setOrigSpatial(complexImageToPngBase64(originalImage, compOrigSpatial));
+  }, [originalImage, compOrigSpatial, cachedOrigFFT]);
+
+  useEffect(() => {
+    if (!cachedOrigFFT) return;
+    setOrigFT(complexImageToFTPngBase64(cachedOrigFFT, compOrigFT));
+  }, [cachedOrigFFT, compOrigFT]);
+
+  // ── Debounced transform effect (local mode only) ──
+  useEffect(() => {
+    if (!originalImage || !originalPixels || !cachedOrigFFT) return;
+    if (useBackend) return; // Backend mode doesn't run local transforms
+
     setProcessing(true);
 
     const timeoutId = setTimeout(() => {
       try {
-        setOrigSpatial(complexImageToPngBase64(originalImage, compOrigSpatial));
-        const origFFT = computeFT(originalImage);
-        setOrigFT(complexImageToFTPngBase64(origFFT, compOrigFT));
-
-        if (useBackend) {
-          setProcessing(false);
-          return; // Let handleApplyBackend orchestrate backend fetching
-        }
-
         let modified: ComplexImage;
-        let targetImage = params.applyInFrequency ? origFFT : originalImage;
+        const targetImage = params.applyInFrequency ? cachedOrigFFT : originalImage;
 
         switch (action) {
           case 'shift': modified = shiftImage(targetImage, params.shiftX, params.shiftY); break;
@@ -276,10 +289,10 @@ export function EmphasizerWorkspace() {
       } finally {
         setProcessing(false);
       }
-    }, 50);
+    }, DEBOUNCE_MS);
 
     return () => clearTimeout(timeoutId);
-  }, [originalImage, originalPixels, action, params, compOrigSpatial, compModSpatial, compOrigFT, compModFT, useBackend]);
+  }, [originalImage, originalPixels, cachedOrigFFT, action, params, compModSpatial, compModFT, useBackend]);
 
   return (
     <div className="workspace">

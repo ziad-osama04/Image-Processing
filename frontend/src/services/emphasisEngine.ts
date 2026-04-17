@@ -1,5 +1,13 @@
+/**
+ * emphasisEngine.ts — Optimized client-side emphasis transforms.
+ *
+ * Uses Float64Array throughout to avoid GC pressure from object allocations.
+ * Convolution uses separable passes for O(n*k) instead of O(n*k²).
+ * FFT operations use the flat-array API to avoid Complex[] ↔ Float64Array conversion.
+ */
+
 import type { Complex } from './fftEngine';
-import { fft2dComplex, ifft2dComplex, complexAbs } from './fftEngine';
+import { fft2dFromFlat, ifft2dFromFlat, fftShiftFlat, complexAbs } from './fftEngine';
 
 export interface ComplexImage {
   real: Float64Array;
@@ -17,15 +25,20 @@ export function createComplexFromGrayscale(pixels: number[], w: number, h: numbe
 
 export function complexImageToPixels(img: ComplexImage, component: 'magnitude' | 'phase' | 'real' | 'imaginary'): number[] {
   const n = img.width * img.height;
-  const raw = new Array(n);
+  const raw = new Float64Array(n);
 
   switch (component) {
     case 'magnitude':
       for (let i = 0; i < n; i++) raw[i] = Math.sqrt(img.real[i] ** 2 + img.imag[i] ** 2);
       break;
-    case 'phase':
-      for (let i = 0; i < n; i++) raw[i] = Math.atan2(img.imag[i], img.real[i]);
-      return raw.map(v => Math.round(((v + Math.PI) / (2 * Math.PI)) * 255));
+    case 'phase': {
+      const result = new Array(n);
+      for (let i = 0; i < n; i++) {
+        const v = Math.atan2(img.imag[i], img.real[i]);
+        result[i] = Math.round(((v + Math.PI) / (2 * Math.PI)) * 255);
+      }
+      return result;
+    }
     case 'real':
       for (let i = 0; i < n; i++) raw[i] = img.real[i];
       break;
@@ -40,114 +53,116 @@ export function complexImageToPixels(img: ComplexImage, component: 'magnitude' |
     if (raw[i] > max) max = raw[i];
   }
   const range = max - min || 1;
-  return raw.map(v => Math.round(((v - min) / range) * 255));
-}
-
-function cloneComplex(img: ComplexImage): ComplexImage {
-  return {
-    real: new Float64Array(img.real),
-    imag: new Float64Array(img.imag),
-    width: img.width,
-    height: img.height,
-  };
+  const result = new Array(n);
+  for (let i = 0; i < n; i++) {
+    result[i] = Math.round(((raw[i] - min) / range) * 255);
+  }
+  return result;
 }
 
 export function shiftImage(img: ComplexImage, dx: number, dy: number): ComplexImage {
   const { width: w, height: h } = img;
-  const out = cloneComplex(img);
-  const tmpReal = new Float64Array(w * h);
-  const tmpImag = new Float64Array(w * h);
+  const n = w * h;
+  const outReal = new Float64Array(n);
+  const outImag = new Float64Array(n);
 
   for (let r = 0; r < h; r++) {
+    const sr = ((r - dy) % h + h) % h;
     for (let c = 0; c < w; c++) {
-      const sr = ((r - dy) % h + h) % h;
       const sc = ((c - dx) % w + w) % w;
-      tmpReal[r * w + c] = img.real[sr * w + sc];
-      tmpImag[r * w + c] = img.imag[sr * w + sc];
+      const dstIdx = r * w + c;
+      const srcIdx = sr * w + sc;
+      outReal[dstIdx] = img.real[srcIdx];
+      outImag[dstIdx] = img.imag[srcIdx];
     }
   }
-  out.real = tmpReal;
-  out.imag = tmpImag;
-  return out;
+  return { real: outReal, imag: outImag, width: w, height: h };
 }
 
 export function multiplyByExp(img: ComplexImage, u0: number, v0: number): ComplexImage {
   const { width: w, height: h } = img;
-  const out = cloneComplex(img);
+  const n = w * h;
+  const outReal = new Float64Array(n);
+  const outImag = new Float64Array(n);
+
+  const twoPiOverW = 2 * Math.PI * u0 / w;
+  const twoPiOverH = 2 * Math.PI * v0 / h;
 
   for (let r = 0; r < h; r++) {
+    const phaseY = twoPiOverH * r;
     for (let c = 0; c < w; c++) {
       const idx = r * w + c;
-      const phase = 2 * Math.PI * (u0 * c / w + v0 * r / h);
+      const phase = twoPiOverW * c + phaseY;
       const expRe = Math.cos(phase);
       const expIm = Math.sin(phase);
-      out.real[idx] = img.real[idx] * expRe - img.imag[idx] * expIm;
-      out.imag[idx] = img.real[idx] * expIm + img.imag[idx] * expRe;
+      outReal[idx] = img.real[idx] * expRe - img.imag[idx] * expIm;
+      outImag[idx] = img.real[idx] * expIm + img.imag[idx] * expRe;
     }
   }
-  return out;
+  return { real: outReal, imag: outImag, width: w, height: h };
 }
 
 export function stretchImage(img: ComplexImage, factor: number): ComplexImage {
   const { width: w, height: h } = img;
   const nw = Math.max(1, Math.round(w * factor));
   const nh = Math.max(1, Math.round(h * factor));
-  const out: ComplexImage = {
-    real: new Float64Array(nw * nh),
-    imag: new Float64Array(nw * nh),
-    width: nw,
-    height: nh,
-  };
+  const n = nw * nh;
+  const outReal = new Float64Array(n);
+  const outImag = new Float64Array(n);
+  const invFactor = 1 / factor;
 
   for (let r = 0; r < nh; r++) {
+    const sr = Math.min(Math.floor(r * invFactor), h - 1);
+    const srcRow = sr * w;
     for (let c = 0; c < nw; c++) {
-      const sr = Math.min(Math.floor(r / factor), h - 1);
-      const sc = Math.min(Math.floor(c / factor), w - 1);
-      out.real[r * nw + c] = img.real[sr * w + sc];
-      out.imag[r * nw + c] = img.imag[sr * w + sc];
+      const sc = Math.min(Math.floor(c * invFactor), w - 1);
+      const dstIdx = r * nw + c;
+      const srcIdx = srcRow + sc;
+      outReal[dstIdx] = img.real[srcIdx];
+      outImag[dstIdx] = img.imag[srcIdx];
     }
   }
-  return out;
+  return { real: outReal, imag: outImag, width: nw, height: nh };
 }
 
 export function mirrorImage(img: ComplexImage, axis: 'horizontal' | 'vertical' | 'both'): ComplexImage {
   const { width: w, height: h } = img;
-  const out = cloneComplex(img);
-  
+  const outReal = new Float64Array(img.real);
+  const outImag = new Float64Array(img.imag);
+
   if (axis === 'horizontal' || axis === 'both') {
     const mid = Math.floor(w / 2);
     for (let r = 0; r < h; r++) {
+      const rowOff = r * w;
       for (let c = mid; c < w; c++) {
         const srcC = w - 1 - c;
-        out.real[r * w + c] = out.real[r * w + srcC];
-        out.imag[r * w + c] = out.imag[r * w + srcC];
+        outReal[rowOff + c] = outReal[rowOff + srcC];
+        outImag[rowOff + c] = outImag[rowOff + srcC];
       }
     }
   }
   if (axis === 'vertical' || axis === 'both') {
     const mid = Math.floor(h / 2);
     for (let r = mid; r < h; r++) {
+      const srcR = h - 1 - r;
+      const dstOff = r * w;
+      const srcOff = srcR * w;
       for (let c = 0; c < w; c++) {
-        const srcR = h - 1 - r;
-        out.real[r * w + c] = out.real[srcR * w + c];
-        out.imag[r * w + c] = out.imag[srcR * w + c];
+        outReal[dstOff + c] = outReal[srcOff + c];
+        outImag[dstOff + c] = outImag[srcOff + c];
       }
     }
   }
-  return out;
+  return { real: outReal, imag: outImag, width: w, height: h };
 }
 
 export function makeEvenOdd(img: ComplexImage, type: 'even' | 'odd'): ComplexImage {
   const { width: w, height: h } = img;
   const nw = w * 2;
   const nh = h * 2;
-  const out: ComplexImage = {
-    real: new Float64Array(nw * nh),
-    imag: new Float64Array(nw * nh),
-    width: nw,
-    height: nh,
-  };
-
+  const n = nw * nh;
+  const outReal = new Float64Array(n);
+  const outImag = new Float64Array(n);
   const sign = type === 'even' ? 1 : -1;
 
   for (let r = 0; r < nh; r++) {
@@ -160,11 +175,13 @@ export function makeEvenOdd(img: ComplexImage, type: 'even' | 'odd'): ComplexIma
       const sc = Math.min(Math.abs(cc), w - 1);
 
       const mul = isFlipped ? sign : 1;
-      out.real[r * nw + c] = img.real[sr * w + sc] * mul;
-      out.imag[r * nw + c] = img.imag[sr * w + sc] * mul;
+      const dstIdx = r * nw + c;
+      const srcIdx = sr * w + sc;
+      outReal[dstIdx] = img.real[srcIdx] * mul;
+      outImag[dstIdx] = img.imag[srcIdx] * mul;
     }
   }
-  return out;
+  return { real: outReal, imag: outImag, width: nw, height: nh };
 }
 
 export function rotateImage(img: ComplexImage, angleDeg: number): ComplexImage {
@@ -184,29 +201,36 @@ export function rotateImage(img: ComplexImage, angleDeg: number): ComplexImage {
 
   const nw = Math.ceil(maxX - minX);
   const nh = Math.ceil(maxY - minY);
-  const out: ComplexImage = { real: new Float64Array(nw*nh), imag: new Float64Array(nw*nh), width: nw, height: nh };
+  const n = nw * nh;
+  const outReal = new Float64Array(n);
+  const outImag = new Float64Array(n);
 
   const cx = w / 2, cy = h / 2;
   const ncx = nw / 2, ncy = nh / 2;
 
   for (let r = 0; r < nh; r++) {
+    const dy = r - ncy;
     for (let c = 0; c < nw; c++) {
-      const dx = c - ncx, dy = r - ncy;
+      const dx = c - ncx;
       const sx = dx * cosA + dy * sinA + cx;
       const sy = -dx * sinA + dy * cosA + cy;
       const si = Math.round(sy), sj = Math.round(sx);
       if (si >= 0 && si < h && sj >= 0 && sj < w) {
-        out.real[r * nw + c] = img.real[si * w + sj];
-        out.imag[r * nw + c] = img.imag[si * w + sj];
+        const dstIdx = r * nw + c;
+        const srcIdx = si * w + sj;
+        outReal[dstIdx] = img.real[srcIdx];
+        outImag[dstIdx] = img.imag[srcIdx];
       }
     }
   }
-  return out;
+  return { real: outReal, imag: outImag, width: nw, height: nh };
 }
 
 export function differentiateImage(img: ComplexImage, direction: 'x' | 'y' | 'both'): ComplexImage {
   const { width: w, height: h } = img;
-  const out: ComplexImage = { real: new Float64Array(w*h), imag: new Float64Array(w*h), width: w, height: h };
+  const n = w * h;
+  const outReal = new Float64Array(n);
+  const outImag = new Float64Array(n);
 
   for (let r = 0; r < h; r++) {
     for (let c = 0; c < w; c++) {
@@ -216,50 +240,52 @@ export function differentiateImage(img: ComplexImage, direction: 'x' | 'y' | 'bo
       if (direction === 'x' || direction === 'both') {
         const right = c < w - 1 ? r * w + c + 1 : idx;
         const left = c > 0 ? r * w + c - 1 : idx;
-        dxRe = (img.real[right] - img.real[left]) / 2;
-        dxIm = (img.imag[right] - img.imag[left]) / 2;
+        dxRe = (img.real[right] - img.real[left]) * 0.5;
+        dxIm = (img.imag[right] - img.imag[left]) * 0.5;
       }
       if (direction === 'y' || direction === 'both') {
         const down = r < h - 1 ? (r + 1) * w + c : idx;
         const up = r > 0 ? (r - 1) * w + c : idx;
-        dyRe = (img.real[down] - img.real[up]) / 2;
-        dyIm = (img.imag[down] - img.imag[up]) / 2;
+        dyRe = (img.real[down] - img.real[up]) * 0.5;
+        dyIm = (img.imag[down] - img.imag[up]) * 0.5;
       }
 
       if (direction === 'both') {
-        out.real[idx] = Math.sqrt(dxRe * dxRe + dyRe * dyRe);
-        out.imag[idx] = Math.sqrt(dxIm * dxIm + dyIm * dyIm);
+        outReal[idx] = Math.sqrt(dxRe * dxRe + dyRe * dyRe);
+        outImag[idx] = Math.sqrt(dxIm * dxIm + dyIm * dyIm);
       } else if (direction === 'x') {
-        out.real[idx] = dxRe; out.imag[idx] = dxIm;
+        outReal[idx] = dxRe; outImag[idx] = dxIm;
       } else {
-        out.real[idx] = dyRe; out.imag[idx] = dyIm;
+        outReal[idx] = dyRe; outImag[idx] = dyIm;
       }
     }
   }
-  return out;
+  return { real: outReal, imag: outImag, width: w, height: h };
 }
 
 export function integrateImage(img: ComplexImage, direction: 'x' | 'y' | 'both'): ComplexImage {
   const { width: w, height: h } = img;
-  const out = cloneComplex(img);
+  const outReal = new Float64Array(img.real);
+  const outImag = new Float64Array(img.imag);
 
   if (direction === 'x' || direction === 'both') {
     for (let r = 0; r < h; r++) {
+      const rowOff = r * w;
       for (let c = 1; c < w; c++) {
-        out.real[r * w + c] += out.real[r * w + c - 1];
-        out.imag[r * w + c] += out.imag[r * w + c - 1];
+        outReal[rowOff + c] += outReal[rowOff + c - 1];
+        outImag[rowOff + c] += outImag[rowOff + c - 1];
       }
     }
   }
   if (direction === 'y' || direction === 'both') {
     for (let c = 0; c < w; c++) {
       for (let r = 1; r < h; r++) {
-        out.real[r * w + c] += out.real[(r - 1) * w + c];
-        out.imag[r * w + c] += out.imag[(r - 1) * w + c];
+        outReal[r * w + c] += outReal[(r - 1) * w + c];
+        outImag[r * w + c] += outImag[(r - 1) * w + c];
       }
     }
   }
-  return out;
+  return { real: outReal, imag: outImag, width: w, height: h };
 }
 
 export type WindowType = 'rectangular' | 'gaussian' | 'hamming' | 'hanning';
@@ -299,44 +325,83 @@ function generateWindow1D(n: number, type: WindowType, sigma: number): Float64Ar
   return win;
 }
 
-function convolve2dChannel(
+/**
+ * Separable 2D convolution: applies 1D horizontal pass then 1D vertical pass.
+ * O(n * (kw + kh)) instead of O(n * kw * kh).
+ */
+function convolve2dSeparable(
   input: Float64Array, inW: number, inH: number,
-  kernel: Float64Array, kw: number, kh: number,
+  winX: Float64Array, winY: Float64Array,
+  kw: number, kh: number,
   strideX: number, strideY: number, mode: 'same' | 'valid',
 ): { data: Float64Array; outW: number; outH: number } {
+  // Normalize the window (we do it inline since it's separable)
+  let sumX = 0, sumY = 0;
+  for (let i = 0; i < kw; i++) sumX += winX[i];
+  for (let i = 0; i < kh; i++) sumY += winY[i];
+  // Normalize so the overall sum = 1: each window gets sqrt-normalized
+  // Actually, we normalize by sumX * sumY at the end
+  const totalSum = sumX * sumY;
+  const invSum = totalSum > 0 ? 1 / totalSum : 1;
+
   let padX = 0, padY = 0;
   if (mode === 'same') {
     padX = Math.floor(kw / 2);
     padY = Math.floor(kh / 2);
   }
-  const paddedW = inW + 2 * padX;
-  const paddedH = inH + 2 * padY;
 
-  // Create zero-padded input
-  const padded = new Float64Array(paddedW * paddedH);
-  for (let r = 0; r < inH; r++) {
-    for (let c = 0; c < inW; c++) {
-      padded[(r + padY) * paddedW + (c + padX)] = input[r * inW + c];
+  // Pass 1: Horizontal convolution with winX
+  const midH = inH;
+  const midW = mode === 'same' ? inW : Math.max(1, inW - kw + 1);
+  const mid = new Float64Array(midH * midW);
+
+  for (let r = 0; r < midH; r++) {
+    for (let c = 0; c < midW; c++) {
+      let sum = 0;
+      const startC = c - padX;
+      for (let k = 0; k < kw; k++) {
+        const srcC = startC + k;
+        if (srcC >= 0 && srcC < inW) {
+          sum += input[r * inW + srcC] * winX[k];
+        }
+      }
+      mid[r * midW + c] = sum;
     }
   }
 
-  // Output dimensions
-  const outH = Math.floor((paddedH - kh) / strideY) + 1;
-  const outW = Math.floor((paddedW - kw) / strideX) + 1;
-  const out = new Float64Array(outH * outW);
+  // Pass 2: Vertical convolution with winY
+  const preStrideH = mode === 'same' ? midH : Math.max(1, midH - kh + 1);
+  const preStrideW = midW;
 
-  // Sliding-window convolution
-  for (let or_ = 0; or_ < outH; or_++) {
-    const inR = or_ * strideY;
-    for (let oc = 0; oc < outW; oc++) {
-      const inC = oc * strideX;
+  const preStride = new Float64Array(preStrideH * preStrideW);
+
+  for (let c = 0; c < preStrideW; c++) {
+    for (let r = 0; r < preStrideH; r++) {
       let sum = 0;
-      for (let kr = 0; kr < kh; kr++) {
-        for (let kc = 0; kc < kw; kc++) {
-          sum += padded[(inR + kr) * paddedW + (inC + kc)] * kernel[kr * kw + kc];
+      const startR = r - padY;
+      for (let k = 0; k < kh; k++) {
+        const srcR = startR + k;
+        if (srcR >= 0 && srcR < midH) {
+          sum += mid[srcR * midW + c] * winY[k];
         }
       }
-      out[or_ * outW + oc] = sum;
+      preStride[r * preStrideW + c] = sum * invSum;
+    }
+  }
+
+  // Apply stride (subsample)
+  const sx = Math.max(1, strideX);
+  const sy = Math.max(1, strideY);
+  if (sx === 1 && sy === 1) {
+    return { data: preStride, outW: preStrideW, outH: preStrideH };
+  }
+
+  const outH = Math.ceil(preStrideH / sy);
+  const outW = Math.ceil(preStrideW / sx);
+  const out = new Float64Array(outH * outW);
+  for (let r = 0; r < outH; r++) {
+    for (let c = 0; c < outW; c++) {
+      out[r * outW + c] = preStride[(r * sy) * preStrideW + (c * sx)];
     }
   }
   return { data: out, outW, outH };
@@ -353,26 +418,13 @@ export function applyWindow(img: ComplexImage, params: WindowParams): ComplexIma
   const kw = Math.max(1, params.kernelWidth) | 1;
   const kh = Math.max(1, params.kernelHeight) | 1;
 
-  // Build 2D kernel (separable outer product)
+  // Build 1D windows
   const winX = generateWindow1D(kw, params.type, sigma);
   const winY = generateWindow1D(kh, params.type, sigma);
-  const kernel = new Float64Array(kh * kw);
-  let kSum = 0;
-  for (let r = 0; r < kh; r++) {
-    for (let c = 0; c < kw; c++) {
-      const v = winY[r] * winX[c];
-      kernel[r * kw + c] = v;
-      kSum += v;
-    }
-  }
-  // Normalize kernel
-  if (kSum > 0) {
-    for (let i = 0; i < kernel.length; i++) kernel[i] /= kSum;
-  }
 
-  // Convolve real and imaginary parts separately
-  const realResult = convolve2dChannel(img.real, w, h, kernel, kw, kh, sx, sy, mode);
-  const imagResult = convolve2dChannel(img.imag, w, h, kernel, kw, kh, sx, sy, mode);
+  // Use separable convolution for both real and imaginary parts
+  const realResult = convolve2dSeparable(img.real, w, h, winX, winY, kw, kh, sx, sy, mode);
+  const imagResult = convolve2dSeparable(img.imag, w, h, winX, winY, kw, kh, sx, sy, mode);
 
   return {
     real: realResult.data,
@@ -383,64 +435,30 @@ export function applyWindow(img: ComplexImage, params: WindowParams): ComplexIma
 }
 
 export function applyMultipleFT(img: ComplexImage, count: number): ComplexImage {
-  let current = img;
-  for (let i = 0; i < count; i++) {
-    const complexArr: Complex[] = new Array(current.width * current.height);
-    for (let j = 0; j < complexArr.length; j++) {
-      complexArr[j] = { re: current.real[j], im: current.imag[j] };
-    }
-    const fftResult = fft2dComplex(complexArr, current.width, current.height);
+  let curRe = img.real;
+  let curIm = img.imag;
+  let curW = img.width;
+  let curH = img.height;
 
-    current = {
-      real: new Float64Array(fftResult.rows * fftResult.cols),
-      imag: new Float64Array(fftResult.rows * fftResult.cols),
-      width: fftResult.cols,
-      height: fftResult.rows,
-    };
-    for (let j = 0; j < fftResult.data.length; j++) {
-      current.real[j] = fftResult.data[j].re;
-      current.imag[j] = fftResult.data[j].im;
-    }
+  for (let i = 0; i < count; i++) {
+    const result = fft2dFromFlat(curRe, curIm, curW, curH);
+    curRe = result.re;
+    curIm = result.im;
+    curW = result.cols;
+    curH = result.rows;
   }
-  return current;
+
+  return { real: curRe, imag: curIm, width: curW, height: curH };
 }
 
 export function computeFT(img: ComplexImage): ComplexImage {
-  const complexArr: Complex[] = new Array(img.width * img.height);
-  for (let j = 0; j < complexArr.length; j++) {
-    complexArr[j] = { re: img.real[j], im: img.imag[j] };
-  }
-  const fftResult = fft2dComplex(complexArr, img.width, img.height);
-  const out: ComplexImage = {
-    real: new Float64Array(fftResult.rows * fftResult.cols),
-    imag: new Float64Array(fftResult.rows * fftResult.cols),
-    width: fftResult.cols,
-    height: fftResult.rows,
-  };
-  for (let j = 0; j < fftResult.data.length; j++) {
-    out.real[j] = fftResult.data[j].re;
-    out.imag[j] = fftResult.data[j].im;
-  }
-  return out;
+  const result = fft2dFromFlat(img.real, img.imag, img.width, img.height);
+  return { real: result.re, imag: result.im, width: result.cols, height: result.rows };
 }
 
 export function computeIFT(img: ComplexImage): ComplexImage {
-  const complexArr: Complex[] = new Array(img.width * img.height);
-  for (let j = 0; j < complexArr.length; j++) {
-    complexArr[j] = { re: img.real[j], im: img.imag[j] };
-  }
-  const result = ifft2dComplex({ data: complexArr, rows: img.height, cols: img.width });
-  const out: ComplexImage = {
-    real: new Float64Array(result.width * result.height),
-    imag: new Float64Array(result.width * result.height),
-    width: result.width,
-    height: result.height,
-  };
-  for (let j = 0; j < result.data.length; j++) {
-    out.real[j] = result.data[j].re;
-    out.imag[j] = result.data[j].im;
-  }
-  return out;
+  const result = ifft2dFromFlat(img.real, img.imag, img.width, img.height);
+  return { real: result.re, imag: result.im, width: result.cols, height: result.rows };
 }
 
 export function complexToDisplayPixels(
@@ -452,22 +470,8 @@ export function complexToDisplayPixels(
 
 export function shiftComplexImage(img: ComplexImage): ComplexImage {
   const { width: w, height: h } = img;
-  const hw = w >> 1, hh = h >> 1;
-  const out: ComplexImage = {
-    real: new Float64Array(w * h),
-    imag: new Float64Array(w * h),
-    width: w,
-    height: h,
-  };
-  for (let r = 0; r < h; r++) {
-    for (let c = 0; c < w; c++) {
-      const sr = (r + hh) % h;
-      const sc = (c + hw) % w;
-      out.real[sr * w + sc] = img.real[r * w + c];
-      out.imag[sr * w + sc] = img.imag[r * w + c];
-    }
-  }
-  return out;
+  const result = fftShiftFlat(img.real, img.imag, h, w);
+  return { real: result.re, imag: result.im, width: w, height: h };
 }
 
 export function loadFileAsComplexImage(file: File): Promise<{ img: ComplexImage; pixels: number[] }> {
